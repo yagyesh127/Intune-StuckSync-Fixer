@@ -1,0 +1,48 @@
+<#
+.SYNOPSIS
+Detects stale Intune sync without accessing protected registry keys.
+
+.DESCRIPTION
+Uses Intune Management Extension service state and recent activity
+from Event Logs to determine health.
+
+.AUTHOR
+Intune Automation
+#>
+
+$ThresholdHours = 24
+$ImeService = "IntuneManagementExtension"
+
+try {
+    # 1. IME service must be running
+    $service = Get-Service -Name $ImeService -ErrorAction Stop
+    if ($service.Status -ne "Running") {
+        Write-Output "IME service not running"
+        exit 1
+    }
+
+    # 2. Check recent IME activity via Event Log
+    $lastEvent = Get-WinEvent -FilterHashtable @{
+        LogName = "Microsoft-Windows-DeviceManagement-Enterprise-Diagnostics-Provider/Admin"
+        ID      = 208
+    } -MaxEvents 1 -ErrorAction SilentlyContinue
+
+    if (-not $lastEvent) {
+        Write-Output "No recent IME sync events found"
+        exit 1
+    }
+
+    $hoursSinceEvent = (New-TimeSpan -Start $lastEvent.TimeCreated -End (Get-Date)).TotalHours
+
+    if ($hoursSinceEvent -gt $ThresholdHours) {
+        Write-Output "IME sync stale: $([math]::Round($hoursSinceEvent,1)) hours"
+        exit 1
+    }
+
+    Write-Output "IME sync healthy"
+    exit 0
+}
+catch {
+    Write-Output "Detection error: $_"
+    exit 1
+}
