@@ -1,0 +1,39 @@
+## **What GOOD Output Looks Like**
+
+*Example 1*
+**Detection (Healthy)**
+
+Healthy | Intune transport + IME OK
+Last IME activity: Sensor.log (2h ago)
+
+Detection (Unhealthy but Fixable)
+IME activity stale (36h > 24h)
+
+**Remediation runs**
+
+Remediation (Successful)
+IME service restarted
+Triggered: \Microsoft\Windows\EnterpriseMgmt\{GUID}\PushLaunch
+Remediation completed successfully
+
+*Example 2*
+
+PS C:\Users\yagye\OneDrive\Documents\PowerShell Learning\IntuneStuckSyncFixer\Intune-StuckSync-Fixer-main\Intune-StuckSync-Fixer-main> .\Detect-Intune-StuckSync.ps1
+Healthy | Intune transport + IME OK
+Last IME activity: AppWorkload.log (0h ago)
+
+PS C:\Users\yagye\OneDrive\Documents\PowerShell Learning\IntuneStuckSyncFixer\Intune-StuckSync-Fixer-main\Intune-StuckSync-Fixer-main> .\Remediation-Intune-StuckSync.PS1
+[IntuneSyncFixer] Validating MDM transport (DmWapPushService)...
+[IntuneSyncFixer] MDM transport healthy.
+[IntuneSyncFixer] Checking IntuneManagementExtension (IME) service...
+[IntuneSyncFixer] Restarting IME service...
+
+
+🚨 Expected “Non-Remediable” Outputs (These Are OK)
+
+You will see some devices reporting issues but not remediated.
+
+Examples:
+
+MDM transport not running
+IntuneManagementExtension not installed
