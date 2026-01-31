@@ -1,103 +1,60 @@
----
+# Component Breakdown – Intune-StuckSync-Fixer
 
-## Component Breakdown
+## 1. Detection Script
+**Purpose:** Decide whether remediation is required.
 
-### 1. Detection Script
+Responsibilities:
+- Check IME service presence
+- Evaluate IME log activity freshness
+- Validate MDM transport availability
+- Output deterministic exit codes
 
-**Purpose**
-- Determine whether the device has failed to sync with Intune within a defined SLA window.
-
-**Key Characteristics**
-- Read-only
-- No service restarts
-- Fast execution
-- Deterministic output
-
-**Data Source**
-- Registry:  
-  `HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension`
-
-**Exit Codes**
-- `0` → Device is healthy
-- `1` → Sync is stale or undetermined
+Outputs:
+- Exit `0` → Healthy
+- Exit `1` → Unhealthy
 
 ---
 
-### 2. Remediation Script
+## 2. Remediation Script
+**Purpose:** Restore IME health and trigger sync safely.
 
-**Purpose**
-- Safely recover Intune sync without unnecessary disruption.
-
-**Actions**
-- Re-validate sync age
-- Restart `IntuneManagementExtension` service only when required
-- Allow natural policy re-evaluation
-- Avoid redundant or repeated actions
-
-**Safety Controls**
-- Threshold-based execution
-- Try/Catch with graceful failure
-- No reboot or destructive operations
+Responsibilities:
+- Restart or start IntuneManagementExtension
+- Verify service recovery
+- Trigger EnterpriseMgmt scheduled tasks
+- Avoid unsafe OS changes
 
 ---
 
-### 3. Log Analytics Integration
-
-**Why Central Logging Matters**
-- Intune reporting alone does not explain *why* remediation ran
-- Logs enable:
-  - Root-cause analysis
-  - Pattern detection
-  - Auditability
-
-**Implementation**
-- Azure Monitor HTTP Data Collector API
-- Custom table: `IntuneSyncFixer_CL`
-- Fields:
-  - TimeGenerated
-  - Computer
-  - Level (INFO/WARN/ERROR)
-  - Message
+## 3. IME Log Evaluation
+- Reads IME log files under:
+  `C:\ProgramData\Microsoft\IntuneManagementExtension\Logs`
+- Uses timestamp freshness as health signal
+- Avoids registry or event log dependency
 
 ---
 
-### 4. User Toast Notification
-
-**Purpose**
-- Improve transparency and user trust
-- Reduce helpdesk tickets caused by “silent fixes”
-
-**Design**
-- Non-technical language
-- No action required from user
-- Triggered only after remediation
+## 4. EnterpriseMgmt Task Enumeration
+- Enumerates tasks under:
+  `\Microsoft\Windows\EnterpriseMgmt\`
+- Handles GUID-based enrollment paths
+- Triggers Push / Schedule tasks safely
 
 ---
 
-## Design Principles
-
-| Principle | Implementation |
-|---------|----------------|
-| Least privilege | Read-only detection |
-| Idempotency | No repeated restarts |
-| Observability | Central logging |
-| UX awareness | Toast notifications |
-| Scalability | Tenant-wide deployment |
+## 5. Optional Log Analytics Integration
+- Sends remediation results to Azure Log Analytics
+- Enables centralized reporting and dashboards
 
 ---
 
-## Supported Platforms
-
-- Windows 10 (20H2+)
-- Windows 11
-- Microsoft Intune (MEM)
-- Azure Log Analytics
+## 6. Optional User Toast Notification
+- Shown only when an interactive user session exists
+- Automatically skipped in SYSTEM-only contexts
 
 ---
 
-## Future Enhancements
-
-- Azure Monitor alerts for repeated remediation
-- Correlation with Endpoint Analytics scores
-- Graph-based device health validation
-- Multi-tenant MSP adaptation
+## Non-Goals
+- Repair broken MDM enrollment
+- Modify OS-owned services
+- Replace re-enrollment scenarios
