@@ -46,11 +46,24 @@ Intune-StuckSync-Fixer detects this condition and restores Intune Management Ext
 
 **DECISION MATRIX**			
 				
-DmWapPush	IME Installed	IME Activity	Detection	      Remediation
-Running	  Yes	          Stale	        ❌ Unhealthy	  ✅ YES
-Running	  Yes	          Fresh	        ✅ Healthy	    ❌ No
-Running	  No	          —	            ❌ Unhealthy	  ❌ No
-Stopped	  Any	          Any	          ❌ Unhealthy	  ❌ No
+flowchart TD
+    A[Windows Device<br/>Intune Enrolled?]
+
+    A -->|No| Z[Not applicable<br/>Outside scope]
+
+    A -->|Yes| B{MDM Transport<br/>Running?}
+
+    B -->|No| C[Unhealthy<br/>Transport broken<br/>Re-enrollment required<br/>❌ No remediation]
+
+    B -->|Yes| D{IME Installed?}
+
+    D -->|No| E[Unhealthy<br/>IME missing<br/>Enrollment issue<br/>❌ No remediation]
+
+    D -->|Yes| F{IME Activity<br/>Fresh?}
+
+    F -->|Yes| G[Healthy<br/>✅ No action]
+
+    F -->|No| H[Unhealthy but fixable<br/>IME stalled<br/>✅ Remediation runs]
 
 **Documentation**
 
