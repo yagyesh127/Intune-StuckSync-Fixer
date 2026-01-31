@@ -1,256 +1,246 @@
-<<<<<<< HEAD
 <#
 .SYNOPSIS
-  Remediation script for stale Intune Management Extension (IME) sync.
+Intune-StuckSync-Fixer – Safe Remediation Script
 
 .DESCRIPTION
-  - Checks last IME sync time from registry.
-  - If sync is older than $ThresholdHours, restarts the IME service.
-  - Sends simple logs to Azure Log Analytics (non-blocking).
-  - Attempts a user toast notification (may not show when running as SYSTEM).
+Runs only when Detection = Unhealthy.
 
-USAGE
-  - Paste this as the Remediation script in Intune Proactive Remediations.
-  - Set $WorkspaceId and $SharedKey securely (see notes).
+Performs safe, supported remediation actions:
+1. Validates MDM transport (DmWapPushService) – NO auto-fix
+2. Restarts IntuneManagementExtension (IME) when present
+3. Triggers Intune device sync using supported scheduled tasks
+4. Optionally uploads remediation logs to Log Analytics
+5. Optionally shows a user toast notification
+
+Designed for Intune Proactive Remediation (SYSTEM, PowerShell 5.1).
+
+.AUTHOR:: Yagyesh Agarwal
+Intune Automation
 #>
 
-# ----------------- CONFIGURATION -----------------
-# Replace these with your workspace values or inject them securely via Intune
-$WorkspaceId    = "<YOUR_WORKSPACE_ID>"
-$SharedKey      = "<YOUR_PRIMARY_KEY>"
-$LogType        = "IntuneSyncFixer"
+# ============================================================
+# CONFIGURATION
+# ============================================================
 
-# How old (in hours) a sync must be to trigger remediation
-$ThresholdHours = 24
+$EnableLogAnalyticsUpload = $false
+$EnableToast             = $false
 
-# Toast AppId (safe default). Toasts may not appear when running as SYSTEM.
-$ToastAppId     = "Microsoft.CompanyPortal"
-# -------------------------------------------------
+# Log Analytics (only used if enabled)
+$LogAnalyticsWorkspaceId = ""
+$LogAnalyticsSharedKey   = ""
+$LA_CustomLogName        = "IntuneSyncFixer_CL"
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+function Write-Log {
+    param([string]$Message)
+    Write-Output "[IntuneSyncFixer] $Message"
+}
+
+function Get-ServiceInfo {
+    param([string]$Name)
+    Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+}
+
+# ============================================================
+# 1. TRANSPORT SANITY CHECK (NO REPAIR)
+# ============================================================
+
+Write-Log "Validating MDM transport (DmWapPushService)..."
+
+$dmSvc = Get-ServiceInfo -Name "DmWapPushService"
+
+if (-not $dmSvc) {
+    Write-Log "MDM transport missing. Remediation skipped (manual investigation required)."
+    exit 0
+}
+
+if ($dmSvc.StartMode -ne "Auto" -or $dmSvc.State -ne "Running") {
+    Write-Log "MDM transport unhealthy (StartMode=$($dmSvc.StartMode), State=$($dmSvc.State)). No auto-remediation performed."
+    exit 0
+}
+
+Write-Log "MDM transport healthy."
+
+# ============================================================
+# 2. IME SERVICE RESTART (SAFE)
+# ============================================================
+
+Write-Log "Checking IntuneManagementExtension (IME) service..."
+
+$imeSvc = Get-ServiceInfo -Name "IntuneManagementExtension"
+
+if (-not $imeSvc) {
+    Write-Log "IME service not installed. Nothing to remediate."
+    exit 0
+}
+
+try {
+    if ($imeSvc.State -eq "Running") {
+        Write-Log "Restarting IME service..."
+        Restart-Service -Name "IntuneManagementExtension" -Force -ErrorAction Stop
+    }
+    else {
+        Write-Log "IME service stopped. Starting service..."
+        Start-Service -Name "IntuneManagementExtension" -ErrorAction Stop
+    }
+
+    # Allow service to stabilize
+    Start-Sleep -Seconds 10
+
+    # 🔎 VERIFY IME SERVICE STATE (ADD HERE)
+    $imeSvcCheck = Get-Service -Name "IntuneManagementExtension" -ErrorAction SilentlyContinue
+    if ($imeSvcCheck -and $imeSvcCheck.Status -eq "Running") {
+        Write-Log "IME service state confirmed: Running"
+    }
+    else {
+        $state = if ($imeSvcCheck) { $imeSvcCheck.Status } else { "ServiceNotFound" }
+        Write-Log "WARNING: IME service not running after restart (State=$state)"
+    }
+
+    Write-Log "IME service recovery completed."
+}
+catch {
+    Write-Log "ERROR restarting IME service: $($_.Exception.Message)"
+    exit 1
+}
+
+# ============================================================
+# 3. TRIGGER INTUNE DEVICE SYNC (ROBUST ENUMERATION)
+# ============================================================
+
+Write-Log "Triggering Intune device sync via EnterpriseMgmt tasks..."
+
+try 
+{
+    # Enumerate all EnterpriseMgmt tasks (handles GUID subfolders)
+$mgmtTasks = Get-ScheduledTask | Where-Object {
+    $_.TaskPath -like "\Microsoft\Windows\EnterpriseMgmt\*" -and
+    $_.TaskName -match "(?i)Push|Schedule"
+}
+
+    if ($mgmtTasks) {
+        foreach ($t in $mgmtTasks) {
+            try {
+                # Ensure TaskPath ends with backslash for Start-ScheduledTask
+                $tp = if ($t.TaskPath.EndsWith("\")) { $t.TaskPath } else { $t.TaskPath + "\" }
+                Start-ScheduledTask -TaskPath $tp -TaskName $t.TaskName -ErrorAction Stop
+                Write-Log "Triggered: $($tp)$($t.TaskName)"
+            }
+            catch {
+                Write-Log "Failed to trigger: $($t.TaskPath)$($t.TaskName) — $($_.Exception.Message)"
+            }
+        }
+    }
+    else {
+        Write-Log "No EnterpriseMgmt tasks found to trigger (device may be MDM‑broken)."
+    }
+}
+catch {
+    Write-Log "Scheduled tasks enumeration failed: $($_.Exception.Message)"
+}
+
+# ============================================================
+# 4. LOG ANALYTICS (OPTIONAL)
+# ============================================================
 
 function Send-LogAnalytics {
-    param(
-        [string]$Message,
-        [ValidateSet("INFO","WARN","ERROR")] [string]$Level = "INFO"
-    )
+    param([string]$Message)
+
+    if (-not $EnableLogAnalyticsUpload) { return }
+
+    if (-not ($LogAnalyticsWorkspaceId -and $LogAnalyticsSharedKey)) {
+        Write-Log "Log Analytics not configured."
+        return
+    }
 
     try {
-        # Build a simple JSON payload
         $payload = @{
-            TimeGenerated = (Get-Date).ToString("o")
-            Computer      = $env:COMPUTERNAME
-            Level         = $Level
-            Message       = $Message
-        } | ConvertTo-Json -Depth 3
+            Message      = $Message
+            Computer     = $env:COMPUTERNAME
+            TimestampUtc = (Get-Date).ToUniversalTime()
+        } | ConvertTo-Json
 
-        $rfc1123date = (Get-Date).ToUniversalTime().ToString("r")
-        $contentLength = [Text.Encoding]::UTF8.GetByteCount($payload)
-        $stringToSign = "POST`n$contentLength`napplication/json`nx-ms-date:$rfc1123date`n/api/logs"
+        $bytes = [Text.Encoding]::UTF8.GetBytes($payload)
+        $date  = (Get-Date).ToUniversalTime().ToString("r")
 
-        $keyBytes = [Convert]::FromBase64String($SharedKey)
+        $stringToSign = "POST`n$($bytes.Length)`napplication/json`nx-ms-date:$date`n/api/logs"
+        $keyBytes = [Convert]::FromBase64String($LogAnalyticsSharedKey)
         $hmac = New-Object System.Security.Cryptography.HMACSHA256
         $hmac.Key = $keyBytes
         $signature = [Convert]::ToBase64String($hmac.ComputeHash([Text.Encoding]::UTF8.GetBytes($stringToSign)))
 
         $headers = @{
-            "Authorization" = "SharedKey $WorkspaceId:$signature"
-            "Log-Type"      = $LogType
-            "x-ms-date"     = $rfc1123date
-            "Content-Type"  = "application/json"
-        }
+    "Authorization" = "SharedKey ${LogAnalyticsWorkspaceId}:$signature"
+    "Log-Type"      = $LA_CustomLogName
+    "x-ms-date"     = $date
+    "time-generated-field"   = "TimestampUtc"
+    }
 
-        $uri = "https://$WorkspaceId.ods.opinsights.azure.com/api/logs?api-version=2016-04-01"
-        Invoke-RestMethod -Method Post -Uri $uri -Headers $headers -Body $payload -ErrorAction Stop
+        Invoke-RestMethod `
+            -Uri "https://$LogAnalyticsWorkspaceId.ods.opinsights.azure.com/api/logs?api-version=2016-04-01" `
+            -Method Post `
+            -Headers $headers `
+            -Body $bytes `
+            -ContentType "application/json"
+
+        Write-Log "Remediation log uploaded to Log Analytics."
     }
     catch {
-        # Logging must not stop remediation; write to host for troubleshooting
-        Write-Output "Log Analytics send failed: $($_.Exception.Message)"
+        Write-Log "ERROR uploading to Log Analytics: $($_.Exception.Message)"
     }
+}
+
+Send-LogAnalytics -Message "IME restarted and Intune sync triggered"
+
+# ============================================================
+# 5. USER TOAST (OPTIONAL)
+# ============================================================
+
+# Guard: toast requires interactive user session
+$hasUser = Get-Process -Name explorer -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $hasUser) {
+    Write-Log "No interactive user session detected; skipping toast."
+    $EnableToast = $false
 }
 
 function Show-Toast {
     param([string]$Message)
 
+    if (-not $EnableToast) { return }
+
     try {
-        # Simple toast XML. This uses Windows Runtime APIs and may not show when running as SYSTEM.
-        $toastXml = @"
+        $xml = @"
 <toast>
   <visual>
     <binding template='ToastGeneric'>
-      <text>Intune Sync Refreshed</text>
+      <text>Device Sync Refreshed</text>
       <text>$Message</text>
     </binding>
   </visual>
 </toast>
 "@
 
-        $xml = New-Object -TypeName "Windows.Data.Xml.Dom.XmlDocument"
-        $xml.LoadXml($toastXml)
+        $doc = New-Object Windows.Data.Xml.Dom.XmlDocument
+        $doc.LoadXml($xml)
 
-        $notifier = [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($ToastAppId)
-        $toast = [Windows.UI.Notifications.ToastNotification]::new($xml)
-        $notifier.Show($toast)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier("IntuneSyncFixer").Show(
+            [Windows.UI.Notifications.ToastNotification]::new($doc)
+        )
     }
     catch {
-        # Expected in many SYSTEM contexts; keep silent but log for diagnostics
-        Write-Output "Toast skipped or failed: $($_.Exception.Message)"
+        Write-Log "Toast notification failed."
     }
 }
 
-# ----------------- MAIN -----------------
-try {
-    $regPath = "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension"
+Show-Toast -Message "Your device was refreshed to ensure Intune policies stay up to date."
 
-    if (-not (Test-Path -Path $regPath)) {
-        Send-LogAnalytics -Message "IME registry path not found: $regPath" -Level "ERROR"
-        exit 0
-    }
 
-    $props = Get-ItemProperty -Path $regPath -ErrorAction Stop
+# ============================================================
+# COMPLETE
+# ============================================================
 
-    # LastSyncTime may be a string or DateTime; try to parse defensively
-    $lastSyncRaw = $props.LastSyncTime
-    if (-not $lastSyncRaw) {
-        Send-LogAnalytics -Message "LastSyncTime not present in registry" -Level "ERROR"
-        exit 0
-    }
-
-    # Attempt to convert to DateTime
-    $lastSync = $null
-    if ($lastSyncRaw -is [DateTime]) {
-        $lastSync = $lastSyncRaw
-    }
-    else {
-        [DateTime]::TryParse($lastSyncRaw, [ref]$lastSync) | Out-Null
-    }
-
-    if (-not $lastSync) {
-        Send-LogAnalytics -Message "Unable to parse LastSyncTime: $lastSyncRaw" -Level "ERROR"
-        exit 0
-    }
-
-    $hoursSinceSync = (New-TimeSpan -Start $lastSync -End (Get-Date)).TotalHours
-    $hoursRounded = [math]::Round($hoursSinceSync, 1)
-
-    Send-LogAnalytics -Message "Hours since last IME sync: $hoursRounded" -Level "WARN"
-
-    if ($hoursSinceSync -lt $ThresholdHours) {
-        Send-LogAnalytics -Message "Sync is recent (< $ThresholdHours hours). No action required." -Level "INFO"
-        exit 0
-    }
-
-    # Check service existence
-    $svcName = "IntuneManagementExtension"
-    $svc = Get-Service -Name $svcName -ErrorAction SilentlyContinue
-    if (-not $svc) {
-        Send-LogAnalytics -Message "Service $svcName not found on this machine." -Level "ERROR"
-        exit 0
-    }
-
-    # Restart service safely
-    try {
-        if ($svc.Status -eq 'Running') {
-            Restart-Service -Name $svcName -Force -ErrorAction Stop
-        }
-        else {
-            Start-Service -Name $svcName -ErrorAction Stop
-        }
-
-        Start-Sleep -Seconds 10
-        Send-LogAnalytics -Message "IME service restarted or started successfully." -Level "INFO"
-
-        # Attempt to notify user. Note: toasts often do not appear when script runs as SYSTEM.
-        Show-Toast -Message "Your device sync was refreshed to keep policies up to date."
-    }
-    catch {
-        Send-LogAnalytics -Message "Failed to restart/start IME service: $($_.Exception.Message)" -Level "ERROR"
-    }
-}
-catch {
-    Send-LogAnalytics -Message "Remediation script failed: $($_.Exception.Message)" -Level "ERROR"
-    exit 1
-}
-=======
-//🔹 CONFIGURATION BLOCK (EDIT THIS)//
-$WorkspaceId = "<LOG_ANALYTICS_WORKSPACE_ID>"
-$SharedKey  = "<PRIMARY_KEY>"
-$LogType    = "IntuneSyncFixer"
-
-$ToastAppId = "Microsoft.CompanyPortal"
-$ThresholdHours = 24
-
-//🔹 LOG ANALYTICS FUNCTION//
-function Send-LogAnalytics {
-    param (
-        [string]$Message,
-        [string]$Level
-    )
-
-    $time = (Get-Date).ToUniversalTime().ToString("r")
-    $body = @{
-        TimeGenerated = (Get-Date).ToString("o")
-        Level         = $Level
-        Message       = $Message
-        Computer      = $env:COMPUTERNAME
-    } | ConvertTo-Json
-
-    $bytes = [Text.Encoding]::UTF8.GetBytes($body)
-    $stringToSign = "POST`n$($bytes.Length)`napplication/json`nx-ms-date:$time`n/api/logs"
-    $keyBytes = [Convert]::FromBase64String($SharedKey)
-    $hash = New-Object Security.Cryptography.HMACSHA256
-    $hash.Key = $keyBytes
-    $signature = [Convert]::ToBase64String($hash.ComputeHash([Text.Encoding]::UTF8.GetBytes($stringToSign)))
-    $auth = "SharedKey $WorkspaceId:$signature"
-
-    $headers = @{
-        "Authorization"        = $auth
-        "Log-Type"             = $LogType
-        "x-ms-date"            = $time
-        "Content-Type"         = "application/json"
-    }
-
-    Invoke-RestMethod -Uri "https://$WorkspaceId.ods.opinsights.azure.com/api/logs?api-version=2016-04-01" `
-        -Method Post -Headers $headers -Body $bytes -ErrorAction Stop
-}
-
-//🔹 TOAST NOTIFICATION FUNCTION//
-function Show-Toast {
-    param ([string]$Message)
-
-    $xml = @"
-<toast>
-  <visual>
-    <binding template='ToastGeneric'>
-      <text>Intune Sync Fix Applied</text>
-      <text>$Message</text>
-    </binding>
-  </visual>
-</toast>
-"@
-
-    $toastXml = New-Object Windows.Data.Xml.Dom.XmlDocument
-    $toastXml.LoadXml($xml)
-    [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier($ToastAppId).Show(
-        [Windows.UI.Notifications.ToastNotification]::new($toastXml)
-    )
-}
-
-//🔹MAIN REMEDIATION LOGIC//
-try {
-    $reg = "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension"
-    $lastSync = (Get-ItemProperty $reg).LastSyncTime
-    $hours = (New-TimeSpan -Start $lastSync -End (Get-Date)).TotalHours
-
-    Send-LogAnalytics "Detected stale sync: $([math]::Round($hours,1)) hours" "WARN"
-
-    Restart-Service IntuneManagementExtension -Force -ErrorAction Stop
-    Start-Sleep -Seconds 10
-
-    Send-LogAnalytics "IME service restarted successfully" "INFO"
-
-    Show-Toast "Your device sync was refreshed to ensure policies stay up to date."
-}
-catch {
-    Send-LogAnalytics "Remediation failed: $_" "ERROR"
-    throw
-}
->>>>>>> 70d22c1cf5aed302ea4cac45461c88a2f33284f6
+Write-Log "Remediation completed successfully."
+exit 0
