@@ -60,6 +60,10 @@ IME Activity Fresh?
 ├─ Yes → Healthy
 └─**No → Remediation runs**
 
+**Remediation runs only when the device is enrolled, MDM transport is healthy, IME is present, and IME activity is stale.
+All other states are detected and reported, not force-fixed.
+**
+
 **Documentation**
 
 Detailed documentation is split by responsibility:
