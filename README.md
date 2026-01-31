@@ -8,28 +8,46 @@ An Intune Proactive Remediation that detects stuck device sync by validating MDM
 - User toast notification
 - Idempotent and automation-ready
 
-## Detection Script
-Check MDM transport (DmWapPushService)
-_AND_
-Check IME service health
-_AND_
-Check IME log activity freshness
-→ if any blocking/stale → Exit 1
+**What This Solves**
 
+Some Windows devices appear enrolled in Intune but stop:
+Checking in
+Running Win32 apps
+Executing scripts or Proactive Remediations
 
-## Remediation Script (runs only if Exit 1)
-   ├─ Restart IME safely
-   ├─ Trigger sync
-   ├─ Push logs to Log Analytics
-   └─ Notify user (toast)
+Intune-StuckSync-Fixer detects this condition and restores Intune Management Extension (IME) health using supported, enterprise-safe actions.
 
-## Deployment
-See /docs/Intune-Deployment.md
+**How It Works**
 
-## Requirements
-- Microsoft Intune
-- Log Analytics Workspace
-- Windows 10/11
+**Detection Script**
+
+1.Validates IME presence
+2.Checks recent IME activity via logs
+3.Confirms MDM transport availability
+4.→ Healthy (Exit 0) or Unhealthy (Exit 1)
+
+**Remediation Script (runs only if unhealthy)**
+
+1.Restarts IME safely
+2.Verifies IME recovery
+3.Triggers Intune sync via EnterpriseMgmt scheduled tasks
+4.(Optional) Sends logs to Azure Log Analytics
+5.(Optional) Notifies the logged-in user
+
+**Why This Is Different**
+
+--Detection-first – no blind restarts or forced syncs
+--Platform-safe – no registry hacks, no OS service recreation
+--Scale-ready – built for Intune Proactive Remediations
+--Resilient – enumerates EnterpriseMgmt tasks (GUID-safe)
+
+**Documentation**
+
+Detailed documentation is split by responsibility:
+📄 Deployment: Main/Deployment.md
+🏗 Architecture: Main/Architecture.md
+🧩 Components: Main/Components.md
 
 ## Author
-Yagyesh Agarwal
+Yagyesh Agarwal 
+https://www.linkedin.com/in/yagyeshagarwal/
