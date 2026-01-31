@@ -1,5 +1,5 @@
 # Intune-StuckSync-Fixer
-Intune proactive remediation for stuck device sync
+An Intune Proactive Remediation that detects stuck device sync by validating MDM transport, IME execution health, and IME activity freshness — and safely remediates only when appropriate.
 
 ## Features
 - Detection + Remediation split
@@ -9,8 +9,13 @@ Intune proactive remediation for stuck device sync
 - Idempotent and automation-ready
 
 ## Detection Script
-   └─ Checks last sync time
-   └─ Outputs Exit 0 (Healthy) / Exit 1 (Stale)
+Check MDM transport (DmWapPushService)
+_AND_
+Check IME service health
+_AND_
+Check IME log activity freshness
+→ if any blocking/stale → Exit 1
+
 
 ## Remediation Script (runs only if Exit 1)
    ├─ Restart IME safely
