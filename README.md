@@ -17,7 +17,7 @@ Executing scripts or Proactive Remediations
 
 Intune-StuckSync-Fixer detects this condition and restores Intune Management Extension (IME) health using supported, enterprise-safe actions.
 
-**How It Works**
+## **How It Works**
 
 **Detection Script**
 
@@ -34,7 +34,7 @@ Intune-StuckSync-Fixer detects this condition and restores Intune Management Ext
 4.(Optional) Sends logs to Azure Log Analytics
 5.(Optional) Notifies the logged-in user
 
-**Why This Is Different**
+## **Why This Is Different**
 
 --Detection-first – no blind restarts or forced syncs
 
@@ -44,27 +44,16 @@ Intune-StuckSync-Fixer detects this condition and restores Intune Management Ext
 
 --Resilient – enumerates EnterpriseMgmt tasks (GUID-safe)
 
-**DECISION Flow**			
+## **DECISION Flow**			
 				
-Windows Device
-↓
-MDM Transport Running?
-├─ No → No remediation (Re-enroll)
-└─ Yes
-↓
-IME Installed?
-├─ No → No remediation (Enrollment issue)
-└─ Yes
-↓
-IME Activity Fresh?
-├─ Yes → Healthy
-└─**No → Remediation runs**
+<img width="589" height="377" alt="image" src="https://github.com/user-attachments/assets/4aa8cf18-b33e-4c7a-9efa-16c9724b9380" />
+
 
 **Remediation runs only when the device is enrolled, MDM transport is healthy, IME is present, and IME activity is stale.
 All other states are detected and reported, not force-fixed.
 **
 
-**Documentation**
+## **Documentation**
 
 Detailed documentation is split by responsibility:
 📄 Deployment: Main/Deployment.md
