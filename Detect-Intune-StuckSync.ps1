@@ -1,79 +1,213 @@
-<<<<<<< HEAD
 <#
 .SYNOPSIS
-Detects stale Intune device sync.
+End-to-end Intune Windows device health detection.
 
 .DESCRIPTION
-Checks last Intune Management Extension sync time.
-Returns Exit 1 if stale beyond threshold.
+Evaluates Intune health using supported, documented signals only:
+1. DmWapPushService (MDM transport layer)
+2. IntuneManagementExtension service (IME)
+3. IME log activity freshness
 
-.AUTHOR
-Intune Automation
+Exit code:
+  0 = Healthy
+  1 = Unhealthy (transport / IME / stale activity)
+
+Designed for Intune Proactive Remediation (PowerShell 5.1).
+
+#.REFERENCES
+- IME logs & behavior: https://learn.microsoft.com/intune/intune-service/apps/intune-management-extension
+- IME log catalog: https://www.prajwaldesai.com/microsoft-intune-management-extension-logs/
+- DmWapPushService requirement: https://learn.microsoft.com/troubleshoot/mem/intune/device-management/cannot-sync-windows-10-devices
+- Transport failure cases: https://call4cloud.nl/intune-sync-issue-dmwappushservice-missing/
 #>
 
-$ThresholdHours = 24
-$RegPath = "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension"
+[CmdletBinding()]
+param(
+    [int]$ThresholdHours = 24,
+    [bool]$RequireIME    = $true,
+    [switch]$OutputJson,
+    [int]$TailLines      = 300
+)
 
-try {
-    if (-not (Test-Path $RegPath)) {
-        Write-Output "IME registry not found"
-        exit 1
+# -------------------------------------------------
+# Constants
+# -------------------------------------------------
+$NowUtc         = (Get-Date).ToUniversalTime()
+$LogsRoot       = "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs"
+$ImeServiceName = "IntuneManagementExtension"
+$DmServiceName  = "DmWapPushService"
+
+$CandidateLogs = @(
+    "IntuneManagementExtension.log",
+    "AgentExecutor.log",
+    "AppWorkload.log",
+    "HealthScripts.log",
+    "DeviceHealthMonitoring.log",
+    "Win32AppInventory.log",
+    "AppActionProcessor.log",
+    "ClientCertCheck.log",
+    "Sensor.log"
+) | ForEach-Object { Join-Path $LogsRoot $_ }
+
+# -------------------------------------------------
+# Helpers
+# -------------------------------------------------
+
+function Get-ServiceInfo {
+    param([Parameter(Mandatory)][string]$Name)
+
+    $svc = Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+    if (-not $svc) { return $null }
+
+    [PSCustomObject]@{
+        Name      = $svc.Name
+        State     = $svc.State        # Running | Stopped
+        StartMode = $svc.StartMode    # Auto | Manual | Disabled
+    }
+}
+
+function Parse-CMTraceTimestamp {
+    param([string]$Line)
+
+    # CMTrace pattern: time="HH:MM:SS.fff" date="YYYY-MM-DD"
+    $t = [regex]::Match($Line, 'time="(?<t>\d{1,2}:\d{2}:\d{2}(\.\d{1,3})?)"')
+    $d = [regex]::Match($Line, 'date="(?<d>\d{4}[-/]\d{1,2}[-/]\d{1,2})"')
+
+    if ($t.Success -and $d.Success) {
+        $dt = $null
+        if ([datetime]::TryParse("$($d.Groups['d'].Value) $($t.Groups['t'].Value)", [ref]$dt)) {
+            return $dt.ToUniversalTime()
+        }
     }
 
-    $lastSync = (Get-ItemProperty $RegPath).LastSyncTime
-    if (-not $lastSync) { exit 1 }
-
-    $hours = (New-TimeSpan -Start $lastSync -End (Get-Date)).TotalHours
-
-    if ($hours -gt $ThresholdHours) {
-        Write-Output "Sync stale: $([math]::Round($hours,1)) hours"
-        exit 1
+    # Generic fallback: YYYY-MM-DD HH:MM:SS anywhere
+    $g = [regex]::Match($Line, '(?<d>\d{4}[-/]\d{1,2}[-/]\d{1,2}).*(?<t>\d{1,2}:\d{2}:\d{2})')
+    if ($g.Success) {
+        $dt = $null
+        if ([datetime]::TryParse("$($g.Groups['d'].Value) $($g.Groups['t'].Value)", [ref]$dt)) {
+            return $dt.ToUniversalTime()
+        }
     }
 
-    Write-Output "Sync healthy"
-    exit 0
+    return $null
 }
-catch {
-    Write-Output "Detection error: $_"
-    exit 1
-}
-=======
-<#
-.SYNOPSIS
-Detects stale Intune device sync.
 
-.DESCRIPTION
-Checks last Intune Management Extension sync time.
-Returns Exit 1 if stale beyond threshold.
+function Get-LastLogTimestamp {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [int]$Tail = 200
+    )
 
-.AUTHOR
-Intune Automation
-#>
+    if (-not (Test-Path -LiteralPath $Path)) { return $null }
 
-$ThresholdHours = 24
-$RegPath = "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension"
-
-try {
-    if (-not (Test-Path $RegPath)) {
-        Write-Output "IME registry not found"
-        exit 1
+    try {
+        $tail = Get-Content -LiteralPath $Path -Tail $Tail -ErrorAction Stop
+        for ($i = $tail.Count - 1; $i -ge 0; $i--) {
+            $dt = Parse-CMTraceTimestamp -Line $tail[$i]
+            if ($dt) { return $dt }
+        }
+    }
+    catch {
+        # ignore and fall back
     }
 
-    $lastSync = (Get-ItemProperty $RegPath).LastSyncTime
-    if (-not $lastSync) { exit 1 }
+    (Get-Item -LiteralPath $Path).LastWriteTimeUtc
+}
 
-    $hours = (New-TimeSpan -Start $lastSync -End (Get-Date)).TotalHours
+# -------------------------------------------------
+# 0) MDM Transport – DmWapPushService
+# -------------------------------------------------
+$issues = New-Object System.Collections.Generic.List[string]
 
-    if ($hours -gt $ThresholdHours) {
-        Write-Output "Sync stale: $([math]::Round($hours,1)) hours"
-        exit 1
+$dmSvc = Get-ServiceInfo -Name $DmServiceName
+if (-not $dmSvc) {
+    $issues.Add("MDM transport missing: DmWapPushService")
+}
+else {
+    if ($dmSvc.StartMode -ne "Auto") {
+        $issues.Add("MDM transport misconfigured: StartMode=$($dmSvc.StartMode)")
+    }
+    elseif ($dmSvc.State -ne "Running") {
+        $issues.Add("MDM transport not running: State=$($dmSvc.State)")
+    }
+}
+
+# -------------------------------------------------
+# 1) IME Service
+# -------------------------------------------------
+$imeSvc = Get-ServiceInfo -Name $ImeServiceName
+if ($RequireIME) {
+    if (-not $imeSvc) {
+        $issues.Add("IntuneManagementExtension not installed")
+    }
+    else {
+        if ($imeSvc.StartMode -ne "Auto") {
+            $issues.Add("IME service misconfigured: StartMode=$($imeSvc.StartMode)")
+        }
+        elseif ($imeSvc.State -ne "Running") {
+            $issues.Add("IME service not running: State=$($imeSvc.State)")
+        }
+    }
+}
+
+# -------------------------------------------------
+# 2) IME Log Activity (only if IME exists)
+# -------------------------------------------------
+$logInfo = $null
+
+if ($RequireIME -and $imeSvc -and (Test-Path $LogsRoot)) {
+    $timestamps = foreach ($log in $CandidateLogs) {
+        $ts = Get-LastLogTimestamp -Path $log -Tail $TailLines
+        if ($ts) {
+            [PSCustomObject]@{ Path = $log; Time = $ts }
+        }
     }
 
-    Write-Output "Sync healthy"
-    exit 0
+    if ($timestamps -and $timestamps.Count -gt 0) {
+        $latest   = $timestamps | Sort-Object Time -Descending | Select-Object -First 1
+        $ageHours = [math]::Round(($NowUtc - $latest.Time).TotalHours, 1)
+
+        $logInfo = [PSCustomObject]@{
+            NewestLog  = [IO.Path]::GetFileName($latest.Path)
+            NewestTime = $latest.Time
+            AgeHours   = $ageHours
+        }
+
+        if ($ageHours -gt $ThresholdHours) {
+            $issues.Add("IME activity stale ($ageHours h > $ThresholdHours h)")
+        }
+    }
+    # NOTE: no logs yet is NOT a failure (new / idle device)
 }
-catch {
-    Write-Output "Detection error: $_"
-    exit 1
+
+# -------------------------------------------------
+# Final Decision
+# -------------------------------------------------
+$healthy = ($issues.Count -eq 0)
+
+$result = [PSCustomObject]@{
+    Health         = $(if ($healthy) { "Healthy" } else { "Unhealthy" })
+    ThresholdHours = $ThresholdHours
+    DmWapPush      = $dmSvc
+    IMEService     = $imeSvc
+    IMEActivity    = $logInfo
+    Issues         = $issues
+    TimestampUtc   = $NowUtc
 }
->>>>>>> 70d22c1cf5aed302ea4cac45461c88a2f33284f6
+
+if ($OutputJson) {
+    $result | ConvertTo-Json -Depth 5
+}
+else {
+    if ($healthy) {
+        Write-Output "Healthy | Intune transport + IME OK"
+        if ($logInfo) {
+            Write-Output "Last IME activity: $($logInfo.NewestLog) ($($logInfo.AgeHours)h ago)"
+        }
+    }
+    else {
+        $issues | ForEach-Object { Write-Output $_ }
+    }
+}
+
+exit ($(if ($healthy) { 0 } else { 1 }))
