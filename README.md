@@ -37,9 +37,20 @@ Intune-StuckSync-Fixer detects this condition and restores Intune Management Ext
 **Why This Is Different**
 
 --Detection-first – no blind restarts or forced syncs
+
 --Platform-safe – no registry hacks, no OS service recreation
+
 --Scale-ready – built for Intune Proactive Remediations
+
 --Resilient – enumerates EnterpriseMgmt tasks (GUID-safe)
+
+**DECISION MATRIX**			
+				
+DmWapPush	IME Installed	IME Activity	Detection	      Remediation
+Running	  Yes	          Stale	        ❌ Unhealthy	  ✅ YES
+Running	  Yes	          Fresh	        ✅ Healthy	    ❌ No
+Running	  No	          —	            ❌ Unhealthy	  ❌ No
+Stopped	  Any	          Any	          ❌ Unhealthy	  ❌ No
 
 **Documentation**
 
