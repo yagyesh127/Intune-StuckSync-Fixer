@@ -43,9 +43,7 @@ $LA_CustomLogName        = "IntuneSyncFixer_CL"
 
 function Write-Log {
     param(
-        [Parameter(Mandatory)]
         [string]$Message,
-
         [ValidateSet("INFO","WARN","ERROR")]
         [string]$Level = "INFO"
     )
@@ -53,21 +51,29 @@ function Write-Log {
     $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $entry = "[$timestamp] [$Level] [IntuneSyncFixer] $Message"
 
-    # Always emit to PR output
     Write-Output $entry
 
-    # Best-effort local logging (never fail remediation)
     try {
         Add-Content -Path $CustomLogPath -Value $entry -Encoding UTF8
     }
     catch {
-        # Intentionally suppressed
+        # Suppress – logging must never break remediation
     }
 }
 
 function Get-ServiceInfo {
     param([string]$Name)
     Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
+}
+
+# Ensure custom log file exists (PR-safe)
+try {
+    if (-not (Test-Path -LiteralPath $CustomLogPath)) {
+        New-Item -Path $CustomLogPath -ItemType File -Force | Out-Null
+    }
+}
+catch {
+    # Do not fail remediation due to logging issues
 }
 
 # ============================================================
