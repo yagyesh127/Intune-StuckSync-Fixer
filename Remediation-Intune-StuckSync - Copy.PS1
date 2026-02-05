@@ -25,11 +25,12 @@ Intune Automation
 $EnableLogAnalyticsUpload = $false
 $EnableToast             = $false
 
+
 # ============================================================
-# CUSTOM LOGGING CONFIG
+# CUSTOM LOGGING (IME-NATIVE)
 # ============================================================
 
-$CustomLogPath = "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\Intune-StuckSync-Fixer.log"
+$ImeHealthLog = "C:\ProgramData\Microsoft\IntuneManagementExtension\Logs\HealthScripts.log"
 
 
 # Log Analytics (only used if enabled)
@@ -51,29 +52,22 @@ function Write-Log {
     $timestamp = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
     $entry = "[$timestamp] [$Level] [IntuneSyncFixer] $Message"
 
+    # Always emit to PR output
     Write-Output $entry
 
+    # Append to IME-native log (CFA / EDR safe)
     try {
-        Add-Content -Path $CustomLogPath -Value $entry -Encoding UTF8
+        Add-Content -Path $ImeHealthLog -Value $entry -Encoding UTF8
     }
     catch {
-        # Suppress – logging must never break remediation
+        # Never fail remediation due to logging
     }
 }
+
 
 function Get-ServiceInfo {
     param([string]$Name)
     Get-CimInstance Win32_Service -Filter "Name='$Name'" -ErrorAction SilentlyContinue
-}
-
-# Ensure custom log file exists (PR-safe)
-try {
-    if (-not (Test-Path -LiteralPath $CustomLogPath)) {
-        New-Item -Path $CustomLogPath -ItemType File -Force | Out-Null
-    }
-}
-catch {
-    # Do not fail remediation due to logging issues
 }
 
 # ============================================================
@@ -129,13 +123,13 @@ try {
     }
     else {
         $state = if ($imeSvcCheck) { $imeSvcCheck.Status } else { "ServiceNotFound" }
-        Write-Log "WARNING: IME service not running after restart (State=$state)"
+        Write-Log "IME service not running after restart (State=$state)" -Level "WARN"
     }
 
     Write-Log "IME service recovery completed."
 }
 catch {
-    Write-Log "ERROR restarting IME service: $($_.Exception.Message)"
+    Write-Log "Failed to restart IME service: $($_.Exception.Message)" -Level "ERROR"
     exit 1
 }
 
